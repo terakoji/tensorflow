@@ -24,7 +24,6 @@ from tensorflow.contrib.bayesflow.python.ops import special_math
 from tensorflow.contrib.distributions.python.ops import distribution
 from tensorflow.contrib.distributions.python.ops import kullback_leibler
 from tensorflow.contrib.framework.python.framework import tensor_util as contrib_tensor_util
-from tensorflow.python.framework import common_shapes
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -109,20 +108,23 @@ class Normal(distribution.Distribution):
     Raises:
       TypeError: if mu and sigma are different dtypes.
     """
+    parameters = locals()
+    parameters.pop("self")
     with ops.name_scope(name, values=[mu, sigma]) as ns:
       with ops.control_dependencies([check_ops.assert_positive(sigma)] if
                                     validate_args else []):
         self._mu = array_ops.identity(mu, name="mu")
         self._sigma = array_ops.identity(sigma, name="sigma")
         contrib_tensor_util.assert_same_float_dtype((self._mu, self._sigma))
-        super(Normal, self).__init__(
-            dtype=self._sigma.dtype,
-            parameters={"mu": self._mu, "sigma": self._sigma},
-            is_continuous=True,
-            is_reparameterized=True,
-            validate_args=validate_args,
-            allow_nan_stats=allow_nan_stats,
-            name=ns)
+    super(Normal, self).__init__(
+        dtype=self._sigma.dtype,
+        is_continuous=True,
+        is_reparameterized=True,
+        validate_args=validate_args,
+        allow_nan_stats=allow_nan_stats,
+        parameters=parameters,
+        graph_parents=[self._mu, self._sigma],
+        name=ns)
 
   @staticmethod
   def _param_shapes(sample_shape):
@@ -141,10 +143,11 @@ class Normal(distribution.Distribution):
     return self._sigma
 
   def _batch_shape(self):
-    return array_ops.shape(self.mu + self.sigma)
+    return array_ops.broadcast_dynamic_shape(
+        array_ops.shape(self.mu), array_ops.shape(self.sigma))
 
   def _get_batch_shape(self):
-    return common_shapes.broadcast_shape(
+    return array_ops.broadcast_static_shape(
         self._mu.get_shape(), self.sigma.get_shape())
 
   def _event_shape(self):
@@ -154,7 +157,7 @@ class Normal(distribution.Distribution):
     return tensor_shape.scalar()
 
   def _sample_n(self, n, seed=None):
-    shape = array_ops.concat(0, ([n], array_ops.shape(self.mean())))
+    shape = array_ops.concat(([n], array_ops.shape(self.mean())), 0)
     sampled = random_ops.random_normal(
         shape=shape, mean=0, stddev=1, dtype=self.mu.dtype, seed=seed)
     return sampled * self.sigma + self.mu
@@ -210,13 +213,16 @@ class NormalWithSoftplusSigma(Normal):
                validate_args=False,
                allow_nan_stats=True,
                name="NormalWithSoftplusSigma"):
-    with ops.name_scope(name, values=[mu, sigma]) as ns:
+    parameters = locals()
+    parameters.pop("self")
+    with ops.name_scope(name, values=[sigma]) as ns:
       super(NormalWithSoftplusSigma, self).__init__(
           mu=mu,
-          sigma=nn.softplus(sigma),
+          sigma=nn.softplus(sigma, name="softplus_sigma"),
           validate_args=validate_args,
           allow_nan_stats=allow_nan_stats,
           name=ns)
+    self._parameters = parameters
 
 
 @kullback_leibler.RegisterKL(Normal, Normal)

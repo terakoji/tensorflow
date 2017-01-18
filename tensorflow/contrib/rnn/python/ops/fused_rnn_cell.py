@@ -20,6 +20,7 @@ from __future__ import print_function
 
 import abc
 
+from tensorflow.contrib.rnn.python.ops import core_rnn as contrib_rnn
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import rnn
 
@@ -30,7 +31,7 @@ class FusedRNNCell(object):
   A fused RNN cell represents the entire RNN expanded over the time
   dimension. In effect, this represents an entire recurrent network.
 
-  Unlike RNN cells which are subclasses of rnn_cell.RNNCell , a `FusedRNNCell`
+  Unlike RNN cells which are subclasses of `rnn_cell.RNNCell`, a `FusedRNNCell`
   operates on the entire time sequence at once, by putting the loop over time
   inside the cell. This usually leads to much more efficient, but more complex
   and less flexible implementations.
@@ -59,16 +60,19 @@ class FusedRNNCell(object):
       dtype: The data type for the initial state and expected output. Required
         if `initial_state` is not provided or RNN state has a heterogeneous
           dtype.
-      sequence_length: Specifies the length of each sequence in inputs. An int32
-        or int64 vector (tensor) size [batch_size], values in [0, time_len).
+      sequence_length: Specifies the length of each sequence in inputs. An
+        `int32` or `int64` vector (tensor) size `[batch_size]`, values in `[0,
+        time_len)`.
         Defaults to `time_len` for each element.
-      scope: VariableScope for the created subgraph; defaults to class name.
+      scope: `VariableScope` or `string` for the created subgraph; defaults to
+        class name.
 
     Returns:
       A pair containing:
+
       - Output: A `3-D` tensor of shape `[time_len x batch_size x output_size]`
-        or a list of time_len tensors of shape `[batch_size x output_size]`, to
-        match the type of the `inputs`.
+        or a list of `time_len` tensors of shape `[batch_size x output_size]`,
+        to match the type of the `inputs`.
       - Final state: Either a single `2-D` tensor, or a tuple of tensors
         matching the arity and shapes of `initial_state`.
     """
@@ -76,11 +80,15 @@ class FusedRNNCell(object):
 
 
 class FusedRNNCellAdaptor(FusedRNNCell):
-  """This is an adaptor for RNNCell classes to be used with FusedRNNCell.
-
-  """
+  """This is an adaptor for RNNCell classes to be used with `FusedRNNCell`."""
 
   def __init__(self, cell, use_dynamic_rnn=False):
+    """Initialize the adaptor.
+
+    Args:
+      cell: an instance of a subclass of a `rnn_cell.RNNCell`.
+      use_dynamic_rnn: whether to use dynamic (or static) RNN.
+    """
     self._cell = cell
     self._use_dynamic_rnn = use_dynamic_rnn
 
@@ -93,7 +101,7 @@ class FusedRNNCellAdaptor(FusedRNNCell):
     is_list = isinstance(inputs, list)
     if self._use_dynamic_rnn:
       if is_list:
-        inputs = array_ops.pack(inputs)
+        inputs = array_ops.stack(inputs)
       outputs, state = rnn.dynamic_rnn(
           self._cell,
           inputs,
@@ -104,19 +112,19 @@ class FusedRNNCellAdaptor(FusedRNNCell):
           scope=scope)
       if is_list:
         # Convert outputs back to list
-        outputs = array_ops.unpack(outputs)
+        outputs = array_ops.unstack(outputs)
     else:  # non-dynamic rnn
       if not is_list:
-        inputs = array_ops.unpack(inputs)
-      outputs, state = rnn.rnn(self._cell,
-                               inputs,
-                               initial_state=initial_state,
-                               dtype=dtype,
-                               sequence_length=sequence_length,
-                               scope=scope)
+        inputs = array_ops.unstack(inputs)
+      outputs, state = contrib_rnn.static_rnn(self._cell,
+                                              inputs,
+                                              initial_state=initial_state,
+                                              dtype=dtype,
+                                              sequence_length=sequence_length,
+                                              scope=scope)
       if not is_list:
         # Convert outputs back to tensor
-        outputs = array_ops.pack(outputs)
+        outputs = array_ops.stack(outputs)
 
     return outputs, state
 
@@ -127,7 +135,7 @@ class TimeReversedFusedRNN(FusedRNNCell):
   For example,
 
   ```python
-  cell = tf.nn.rnn_cell.BasicRNNCell(10)
+  cell = tf.contrib.rnn.BasicRNNCell(10)
   fw_lstm = tf.contrib.rnn.FusedRNNCellAdaptor(cell, use_dynamic_rnn=True)
   bw_lstm = tf.contrib.rnn.TimeReversedFusedRNN(fw_lstm)
   fw_out, fw_state = fw_lstm(inputs)
@@ -145,7 +153,7 @@ class TimeReversedFusedRNN(FusedRNNCell):
 
     Args:
       t: 3D tensor or list of 2D tensors to be reversed
-      lengths: 1D tensor of lengths, or None
+      lengths: 1D tensor of lengths, or `None`
 
     Returns:
       A reversed tensor or list of tensors
@@ -154,7 +162,7 @@ class TimeReversedFusedRNN(FusedRNNCell):
       return list(reversed(t))
     else:
       if lengths is None:
-        return array_ops.reverse(t, [True, False, False])
+        return array_ops.reverse_v2(t, [0])
       else:
         return array_ops.reverse_sequence(t, lengths, 0, 1)
 

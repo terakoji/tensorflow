@@ -13,19 +13,19 @@
 # limitations under the License.
 # =============================================================================
 """Testing File IO operations in file_io.py."""
+
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
 import os.path
 
-import tensorflow as tf
-
 from tensorflow.python.framework import errors
 from tensorflow.python.lib.io import file_io
+from tensorflow.python.platform import test
 
 
-class FileIoTest(tf.test.TestCase):
+class FileIoTest(test.TestCase):
 
   def setUp(self):
     self._base_dir = os.path.join(self.get_temp_dir(), "base_dir")
@@ -46,6 +46,34 @@ class FileIoTest(tf.test.TestCase):
     self.assertTrue(file_io.file_exists(file_path))
     file_contents = file_io.read_file_to_string(file_path)
     self.assertEqual(b"testing", file_contents)
+
+  def testAtomicWriteStringToFile(self):
+    file_path = os.path.join(self._base_dir, "temp_file")
+    file_io.atomic_write_string_to_file(file_path, "testing")
+    self.assertTrue(file_io.file_exists(file_path))
+    file_contents = file_io.read_file_to_string(file_path)
+    self.assertEqual(b"testing", file_contents)
+
+  def testAppend(self):
+    file_path = os.path.join(self._base_dir, "temp_file")
+    with file_io.FileIO(file_path, mode="w") as f:
+      f.write("begin\n")
+    with file_io.FileIO(file_path, mode="a") as f:
+      f.write("a1\n")
+    with file_io.FileIO(file_path, mode="a") as f:
+      f.write("a2\n")
+    with file_io.FileIO(file_path, mode="r") as f:
+      file_contents = f.read()
+      self.assertEqual(b"begin\na1\na2\n", file_contents)
+
+  def testMultipleFiles(self):
+    file_prefix = os.path.join(self._base_dir, "temp_file")
+    for i in range(5000):
+      f = file_io.FileIO(file_prefix + str(i), mode="w+")
+      f.write("testing")
+      f.flush()
+      self.assertEquals(b"testing", f.read())
+      f.close()
 
   def testMultipleWrites(self):
     file_path = os.path.join(self._base_dir, "temp_file")
@@ -223,7 +251,8 @@ class FileIoTest(tf.test.TestCase):
       all_files.append(w_files)
     self.assertItemsEqual(all_dirs, [dir_path] + [
         os.path.join(dir_path, item)
-        for item in ["subdir1_1", "subdir1_2", "subdir1_2/subdir2", "subdir1_3"]
+        for item in
+        ["subdir1_1", "subdir1_2", "subdir1_2/subdir2", "subdir1_3"]
     ])
     self.assertEqual(dir_path, all_dirs[0])
     self.assertLess(
@@ -249,7 +278,8 @@ class FileIoTest(tf.test.TestCase):
       all_files.append(w_files)
     self.assertItemsEqual(all_dirs, [
         os.path.join(dir_path, item)
-        for item in ["subdir1_1", "subdir1_2/subdir2", "subdir1_2", "subdir1_3"]
+        for item in
+        ["subdir1_1", "subdir1_2/subdir2", "subdir1_2", "subdir1_3"]
     ] + [dir_path])
     self.assertEqual(dir_path, all_dirs[4])
     self.assertLess(
@@ -346,6 +376,9 @@ class FileIoTest(tf.test.TestCase):
     self.assertEqual(0, f.tell())
     self.assertEqual("testing1\n", f.readline())
 
+    with self.assertRaises(errors.InvalidArgumentError):
+      f.seek(-1)
+
   def testReadingIterator(self):
     file_path = os.path.join(self._base_dir, "temp_file")
     data = ["testing1\n", "testing2\n", "testing3\n", "\n", "testing5"]
@@ -365,6 +398,16 @@ class FileIoTest(tf.test.TestCase):
     lines = f.readlines()
     self.assertSequenceEqual(lines, data)
 
+  def testEof(self):
+    """Test that reading past EOF does not raise an exception."""
+
+    file_path = os.path.join(self._base_dir, "temp_file")
+    f = file_io.FileIO(file_path, mode="r+")
+    content = b"testing"
+    f.write(content)
+    f.flush()
+    self.assertEqual(content, f.read(len(content) + 1))
+
 
 if __name__ == "__main__":
-  tf.test.main()
+  test.main()

@@ -29,10 +29,10 @@ RUN pip3 --no-cache-dir install \
         matplotlib \
         numpy \
         scipy \
+        sklearn \
+        Pillow \
         && \
     python3 -m ipykernel.kernelspec
-
-ENV TENSORFLOW_VERSION 0.10.0
 
 # --- DO NOT EDIT OR DELETE BETWEEN THE LINES --- #
 # These lines will be edited automatically by parameterized_docker_build.sh. #
@@ -44,6 +44,8 @@ ENV TENSORFLOW_VERSION 0.10.0
 RUN pip --no-cache-dir install \
     http://storage.googleapis.com/tensorflow/linux/cpu/tensorflow-${TENSORFLOW_VERSION}-cp34-cp34m-linux_x86_64.whl
 # --- ~ DO NOT EDIT OR DELETE BETWEEN THE LINES --- #
+
+# RUN ln -s /usr/bin/python3 /usr/bin/python#
 
 # Set up our notebook config.
 COPY jupyter_notebook_config.py /root/.jupyter/

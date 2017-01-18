@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-
 """Tests for rnn module."""
 
 from __future__ import absolute_import
@@ -20,12 +19,28 @@ from __future__ import division
 from __future__ import print_function
 
 import itertools
+import sys
+
+# TODO: #6568 Remove this hack that makes dlopen() not crash.
+if hasattr(sys, "getdlopenflags") and hasattr(sys, "setdlopenflags"):
+  import ctypes
+  sys.setdlopenflags(sys.getdlopenflags() | ctypes.RTLD_GLOBAL)
 
 import numpy as np
-import tensorflow as tf
+
+from tensorflow.contrib.rnn.python.ops import core_rnn_cell_impl
+from tensorflow.contrib.rnn.python.ops import rnn
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import init_ops
+from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variables
+from tensorflow.python.platform import test
+from tensorflow.python.platform import tf_logging
 
 
-class StackBidirectionalRNNTest(tf.test.TestCase):
+class StackBidirectionalRNNTest(test.TestCase):
 
   def setUp(self):
     self._seed = 23489
@@ -43,28 +58,38 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
     batch_size = 2
     max_length = 8
 
-    initializer = tf.random_uniform_initializer(-0.01, 0.01, seed=self._seed)
-    sequence_length = tf.placeholder(tf.int64) if use_sequence_length else None
+    initializer = init_ops.random_uniform_initializer(
+        -0.01, 0.01, seed=self._seed)
+    sequence_length = array_ops.placeholder(
+        dtypes.int64) if use_sequence_length else None
 
-    self.cells_fw = [tf.nn.rnn_cell.LSTMCell(
-        num_units, input_size, initializer=initializer, state_is_tuple=False)
-                     for num_units in self.layers]
-    self.cells_bw = [tf.nn.rnn_cell.LSTMCell(
-        num_units, input_size, initializer=initializer, state_is_tuple=False)
-                     for num_units in self.layers]
+    self.cells_fw = [
+        core_rnn_cell_impl.LSTMCell(
+            num_units,
+            input_size,
+            initializer=initializer,
+            state_is_tuple=False) for num_units in self.layers
+    ]
+    self.cells_bw = [
+        core_rnn_cell_impl.LSTMCell(
+            num_units,
+            input_size,
+            initializer=initializer,
+            state_is_tuple=False) for num_units in self.layers
+    ]
 
     inputs = max_length * [
-        tf.placeholder(
-            tf.float32,
+        array_ops.placeholder(
+            dtypes.float32,
             shape=(batch_size, input_size) if use_shape else (None, input_size))
     ]
-    outputs, state_fw, state_bw = tf.contrib.rnn.stack_bidirectional_rnn(
+    outputs, state_fw, state_bw = rnn.stack_bidirectional_rnn(
         self.cells_fw,
         self.cells_bw,
         inputs,
         initial_states_fw,
         initial_states_bw,
-        dtype=tf.float32,
+        dtype=dtypes.float32,
         sequence_length=sequence_length,
         scope=scope)
 
@@ -75,19 +100,20 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
           [batch_size if use_shape else None, 2 * self.layers[-1]])
 
     input_value = np.random.randn(batch_size, input_size)
-    outputs = tf.pack(outputs)
+    outputs = array_ops.stack(outputs)
 
     return input_value, inputs, outputs, state_fw, state_bw, sequence_length
 
   def _testStackBidirectionalRNN(self, use_gpu, use_shape):
-    with self.test_session(use_gpu=use_gpu, graph=tf.Graph()) as sess:
+    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
           self._createStackBidirectionalRNN(use_gpu, use_shape, True))
-      tf.initialize_all_variables().run()
+      variables.global_variables_initializer().run()
       # Run with pre-specified sequence lengths of 2, 3.
-      out, s_fw, s_bw = sess.run([outputs, state_fw, state_bw],
-                                 feed_dict={inputs[0]: input_value,
-                                            sequence_length: [2, 3]})
+      out, s_fw, s_bw = sess.run(
+          [outputs, state_fw, state_bw],
+          feed_dict={inputs[0]: input_value,
+                     sequence_length: [2, 3]})
 
       # Since the forward and backward LSTM cells were initialized with the
       # same parameters, the forward and backward states of the first layer
@@ -136,46 +162,61 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
     # - Reset states, and iterate for 5 steps. Last state is state_5.
     # - Reset the sets to state_3 and iterate for 2 more steps,
     #   last state will be state_5'.
-    # - Check that state_5 and state_5' are the same.
-    #   (Check forward and backward).
-    # - Check output_5 and output_5' as well.
-    with self.test_session(use_gpu=use_gpu, graph=tf.Graph()) as sess:
+    # - Check that the  state_5 and state_5' (forward and backward) are the
+    #   same for the first layer (it does not apply for the second layer since
+    #   it has forward-backward dependencies).
+    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+      batch_size = 2
+      # Create states placeholders.
+      initial_states_fw = [
+          array_ops.placeholder(
+              dtypes.float32, shape=(batch_size, layer * 2))
+          for layer in self.layers
+      ]
+      initial_states_bw = [
+          array_ops.placeholder(
+              dtypes.float32, shape=(batch_size, layer * 2))
+          for layer in self.layers
+      ]
       # Create the net
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
-          self._createStackBidirectionalRNN(use_gpu, True, True))
-      tf.initialize_all_variables().run()
+          self._createStackBidirectionalRNN(use_gpu, True, True,
+                                            initial_states_fw,
+                                            initial_states_bw))
+      variables.global_variables_initializer().run()
+
       # Run 3 steps.
+      feed_dict = {inputs[0]: input_value, sequence_length: [3, 2]}
+      # Initialize to empty state.
+      for i, layer in enumerate(self.layers):
+        feed_dict[initial_states_fw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+        feed_dict[initial_states_bw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
       _, st_3_fw, st_3_bw = sess.run([outputs, state_fw, state_bw],
-                                     feed_dict={inputs[0]: input_value,
-                                                sequence_length: [3, 3]})
+                                     feed_dict=feed_dict)
+
       # Reset the net and run 5 steps.
-      batch_size = 2
-      zero_state = [cell.zero_state(
-          batch_size, dtype=tf.float32).eval() for cell in self.cells_fw]
-      feed_dict = {inputs[0]: input_value, sequence_length: [5, 5]}
-      for i, _ in enumerate(self.layers):
-        feed_dict[state_fw[i]] = zero_state[i]
-        feed_dict[state_bw[i]] = zero_state[i]
-      out_5, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
-                                         feed_dict=feed_dict)
+      feed_dict = {inputs[0]: input_value, sequence_length: [5, 3]}
+      for i, layer in enumerate(self.layers):
+        feed_dict[initial_states_fw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+        feed_dict[initial_states_bw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+      _, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
+                                     feed_dict=feed_dict)
 
       # Reset the net to state_3 and run 2 more steps.
-      feed_dict = {inputs[0]: input_value, sequence_length: [2, 2]}
+      feed_dict = {inputs[0]: input_value, sequence_length: [2, 1]}
       for i, _ in enumerate(self.layers):
-        feed_dict[state_fw[i]] = st_3_fw[i]
-        feed_dict[state_bw[i]] = st_3_bw[i]
-
-      out_5, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
-                                         feed_dict=feed_dict)
+        feed_dict[initial_states_fw[i]] = st_3_fw[i]
+        feed_dict[initial_states_bw[i]] = st_3_bw[i]
       out_5p, st_5p_fw, st_5p_bw = sess.run([outputs, state_fw, state_bw],
                                             feed_dict=feed_dict)
 
-      # Check that the 3+2 and 5 outputs are the same.
-      self.assertAllEqual(out_5p[-1][0], out_5[-1][0])
-      # Check that the 3+2 and 5 last states are the same.
-      for i, _ in enumerate(self.layers):
-        self.assertAllEqual(st_5_fw[i], st_5p_fw[i])
-        self.assertAllEqual(st_5_bw[i], st_5p_bw[i])
+      # Check that the 3+2 and 5 first layer states.
+      self.assertAllEqual(st_5_fw[0], st_5p_fw[0])
+      self.assertAllEqual(st_5_bw[0], st_5p_bw[0])
 
   def testStackBidirectionalRNN(self):
     self._testStackBidirectionalRNN(use_gpu=False, use_shape=False)
@@ -197,30 +238,39 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
     batch_size = 2
     max_length = 8
 
-    initializer = tf.random_uniform_initializer(-0.01, 0.01, seed=self._seed)
-    sequence_length = tf.placeholder(tf.int64)
+    initializer = init_ops.random_uniform_initializer(
+        -0.01, 0.01, seed=self._seed)
+    sequence_length = array_ops.placeholder(dtypes.int64)
 
-    self.cells_fw = [tf.nn.rnn_cell.LSTMCell(
-        num_units, input_size, initializer=initializer, state_is_tuple=False)
-                     for num_units in self.layers]
-    self.cells_bw = [tf.nn.rnn_cell.LSTMCell(
-        num_units, input_size, initializer=initializer, state_is_tuple=False)
-                     for num_units in self.layers]
+    self.cells_fw = [
+        core_rnn_cell_impl.LSTMCell(
+            num_units,
+            input_size,
+            initializer=initializer,
+            state_is_tuple=False) for num_units in self.layers
+    ]
+    self.cells_bw = [
+        core_rnn_cell_impl.LSTMCell(
+            num_units,
+            input_size,
+            initializer=initializer,
+            state_is_tuple=False) for num_units in self.layers
+    ]
 
     inputs = max_length * [
-        tf.placeholder(
-            tf.float32,
+        array_ops.placeholder(
+            dtypes.float32,
             shape=(batch_size, input_size) if use_shape else (None, input_size))
     ]
-    inputs_c = tf.pack(inputs)
-    inputs_c = tf.transpose(inputs_c, [1, 0, 2])
-    outputs, st_fw, st_bw = tf.contrib.rnn.stack_bidirectional_dynamic_rnn(
+    inputs_c = array_ops.stack(inputs)
+    inputs_c = array_ops.transpose(inputs_c, [1, 0, 2])
+    outputs, st_fw, st_bw = rnn.stack_bidirectional_dynamic_rnn(
         self.cells_fw,
         self.cells_bw,
         inputs_c,
         initial_states_fw=initial_states_fw,
         initial_states_bw=initial_states_bw,
-        dtype=tf.float32,
+        dtype=dtypes.float32,
         sequence_length=sequence_length,
         scope=scope)
 
@@ -237,15 +287,16 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
 
   def _testStackBidirectionalDynamicRNN(self, use_gpu, use_shape,
                                         use_state_tuple):
-    with self.test_session(use_gpu=use_gpu, graph=tf.Graph()) as sess:
+    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
           self._createStackBidirectionalDynamicRNN(use_gpu, use_shape,
                                                    use_state_tuple))
-      tf.initialize_all_variables().run()
+      variables.global_variables_initializer().run()
       # Run with pre-specified sequence length of 2, 3
-      out, s_fw, s_bw = sess.run([outputs, state_fw, state_bw],
-                                 feed_dict={inputs[0]: input_value,
-                                            sequence_length: [2, 3]})
+      out, s_fw, s_bw = sess.run(
+          [outputs, state_fw, state_bw],
+          feed_dict={inputs[0]: input_value,
+                     sequence_length: [2, 3]})
 
       # Since the forward and backward LSTM cells were initialized with the
       # same parameters, the forward and backward states of the first layer has
@@ -288,54 +339,71 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
       self.assertNotEqual(out[2][1][1], out[0][1][4])
       self.assertNotEqual(out[2][1][2], out[0][1][5])
 
-  def _testStackBidirectionalDynamicRNNStates(self, use_gpu,
-                                              use_state_tuple):
+  def _testStackBidirectionalDynamicRNNStates(self, use_gpu):
+
     # Check that the states are correctly initialized.
     # - Create a net and iterate for 3 states. Keep the state (state_3).
     # - Reset states, and iterate for 5 steps. Last state is state_5.
     # - Reset the sets to state_3 and iterate for 2 more steps,
     #   last state will be state_5'.
-    # - Check that state_5 and state_5' are the same.
-    #   (Check forward and backward).
-    # - Check output_5 and output_5' as well.
-    with self.test_session(use_gpu=use_gpu, graph=tf.Graph()) as sess:
+    # - Check that the  state_5 and state_5' (forward and backward) are the
+    #   same for the first layer (it does not apply for the second layer since
+    #   it has forward-backward dependencies).
+    with self.test_session(use_gpu=use_gpu, graph=ops.Graph()) as sess:
+      batch_size = 2
+      # Create states placeholders.
+      initial_states_fw = [
+          array_ops.placeholder(
+              dtypes.float32, shape=(batch_size, layer * 2))
+          for layer in self.layers
+      ]
+      initial_states_bw = [
+          array_ops.placeholder(
+              dtypes.float32, shape=(batch_size, layer * 2))
+          for layer in self.layers
+      ]
       # Create the net
       input_value, inputs, outputs, state_fw, state_bw, sequence_length = (
-          self._createStackBidirectionalDynamicRNN(use_gpu, False,
-                                                   use_state_tuple))
-      tf.initialize_all_variables().run()
+          self._createStackBidirectionalDynamicRNN(
+              use_gpu,
+              use_shape=True,
+              use_state_tuple=False,
+              initial_states_fw=initial_states_fw,
+              initial_states_bw=initial_states_bw))
+      variables.global_variables_initializer().run()
+
       # Run 3 steps.
+      feed_dict = {inputs[0]: input_value, sequence_length: [3, 2]}
+      # Initialize to empty state.
+      for i, layer in enumerate(self.layers):
+        feed_dict[initial_states_fw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+        feed_dict[initial_states_bw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
       _, st_3_fw, st_3_bw = sess.run([outputs, state_fw, state_bw],
-                                     feed_dict={inputs[0]: input_value,
-                                                sequence_length: [3, 3]})
+                                     feed_dict=feed_dict)
+
       # Reset the net and run 5 steps.
-      batch_size = 2
-      zero_state = [cell.zero_state(
-          batch_size, dtype=tf.float32).eval() for cell in self.cells_fw]
-      feed_dict = {inputs[0]: input_value, sequence_length: [5, 5]}
-      for i, _ in enumerate(self.layers):
-        feed_dict[state_fw[i]] = zero_state[i]
-        feed_dict[state_bw[i]] = zero_state[i]
-      out_5, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
-                                         feed_dict=feed_dict)
+      feed_dict = {inputs[0]: input_value, sequence_length: [5, 3]}
+      for i, layer in enumerate(self.layers):
+        feed_dict[initial_states_fw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+        feed_dict[initial_states_bw[i]] = np.zeros(
+            (batch_size, layer * 2), dtype=np.float32)
+      _, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
+                                     feed_dict=feed_dict)
 
       # Reset the net to state_3 and run 2 more steps.
-      feed_dict = {inputs[0]: input_value, sequence_length: [2, 2]}
+      feed_dict = {inputs[0]: input_value, sequence_length: [2, 1]}
       for i, _ in enumerate(self.layers):
-        feed_dict[state_fw[i]] = st_3_fw[i]
-        feed_dict[state_bw[i]] = st_3_bw[i]
-
-      out_5, st_5_fw, st_5_bw = sess.run([outputs, state_fw, state_bw],
-                                         feed_dict=feed_dict)
+        feed_dict[initial_states_fw[i]] = st_3_fw[i]
+        feed_dict[initial_states_bw[i]] = st_3_bw[i]
       out_5p, st_5p_fw, st_5p_bw = sess.run([outputs, state_fw, state_bw],
                                             feed_dict=feed_dict)
 
-      # Check that the 3+2 and 5 outputs are the same.
-      self.assertAllEqual(out_5p[-1][0], out_5[-1][0])
-      # Check that the 3+2 and 5 last states are the same.
-      for i, _ in enumerate(self.layers):
-        self.assertAllEqual(st_5_fw[i], st_5p_fw[i])
-        self.assertAllEqual(st_5_bw[i], st_5p_bw[i])
+      # Check that the 3+2 and 5 first layer states.
+      self.assertAllEqual(st_5_fw[0], st_5p_fw[0])
+      self.assertAllEqual(st_5_bw[0], st_5p_bw[0])
 
   def testBidirectionalRNN(self):
     # Generate 2^3 option values
@@ -345,48 +413,43 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
       self._testStackBidirectionalDynamicRNN(
           use_gpu=option[0], use_shape=option[1], use_state_tuple=option[2])
     # Check States.
-    self._testStackBidirectionalDynamicRNNStates(
-        use_gpu=False, use_state_tuple=False)
-    self._testStackBidirectionalDynamicRNNStates(
-        use_gpu=True, use_state_tuple=False)
-    self._testStackBidirectionalDynamicRNNStates(
-        use_gpu=False, use_state_tuple=True)
-    self._testStackBidirectionalDynamicRNNStates(
-        use_gpu=True, use_state_tuple=False)
+    self._testStackBidirectionalDynamicRNNStates(use_gpu=False)
+    self._testStackBidirectionalDynamicRNNStates(use_gpu=True)
 
   def _testScope(self, factory, prefix="prefix", use_outer_scope=True):
     # REMARKS: factory(scope) is a function accepting a scope
     #          as an argument, such scope can be None, a string
     #          or a VariableScope instance.
-    with self.test_session(use_gpu=True, graph=tf.Graph()):
+    with self.test_session(use_gpu=True, graph=ops.Graph()):
       if use_outer_scope:
-        with tf.variable_scope(prefix) as scope:
+        with variable_scope.variable_scope(prefix) as scope:
           factory(scope)
       else:
         factory(prefix)
 
       # check that all the variables names starts with the proper scope.
-      tf.initialize_all_variables()
-      all_vars = tf.all_variables()
-      prefix = prefix or "StackRNN"
+      variables.global_variables_initializer()
+      all_vars = variables.global_variables()
+      prefix = prefix or "stack_bidirectional_rnn"
       scope_vars = [v for v in all_vars if v.name.startswith(prefix + "/")]
-      tf.logging.info("StackRNN with scope: %s (%s)"
-                      % (prefix, "scope" if use_outer_scope else "str"))
+      tf_logging.info("StackRNN with scope: %s (%s)" %
+                      (prefix, "scope" if use_outer_scope else "str"))
       for v in scope_vars:
-        tf.logging.info(v.name)
+        tf_logging.info(v.name)
       self.assertEqual(len(scope_vars), len(all_vars))
 
   def testStackBidirectionalRNNScope(self):
+
     def factory(scope):
       return self._createStackBidirectionalRNN(
-          use_gpu=True, use_shape=True,
-          use_sequence_length=True, scope=scope)
+          use_gpu=True, use_shape=True, use_sequence_length=True, scope=scope)
 
     self._testScope(factory, use_outer_scope=True)
     self._testScope(factory, use_outer_scope=False)
     self._testScope(factory, prefix=None, use_outer_scope=False)
 
   def testBidirectionalDynamicRNNScope(self):
+
     def factory(scope):
       return self._createStackBidirectionalDynamicRNN(
           use_gpu=True, use_shape=True, use_state_tuple=True, scope=scope)
@@ -397,4 +460,4 @@ class StackBidirectionalRNNTest(tf.test.TestCase):
 
 
 if __name__ == "__main__":
-  tf.test.main()
+  test.main()

@@ -92,6 +92,7 @@ set(tf_proto_text_srcs
     "tensorflow/core/framework/log_memory.proto"
     "tensorflow/core/framework/node_def.proto"
     "tensorflow/core/framework/op_def.proto"
+    "tensorflow/core/framework/resource_handle.proto"
     "tensorflow/core/framework/step_stats.proto"
     "tensorflow/core/framework/summary.proto"
     "tensorflow/core/framework/tensor.proto"
@@ -102,6 +103,7 @@ set(tf_proto_text_srcs
     "tensorflow/core/framework/versions.proto"
     "tensorflow/core/lib/core/error_codes.proto"
     "tensorflow/core/protobuf/config.proto"
+    "tensorflow/core/protobuf/debug.proto"
     "tensorflow/core/protobuf/tensor_bundle.proto"
     "tensorflow/core/protobuf/saver.proto"
     "tensorflow/core/util/memmapped_file_system.proto"
@@ -112,9 +114,6 @@ RELATIVE_PROTOBUF_TEXT_GENERATE_CPP(PROTO_TEXT_SRCS PROTO_TEXT_HDRS
 )
 
 add_library(tf_protos_cc ${PROTO_SRCS} ${PROTO_HDRS})
-target_link_libraries(tf_protos_cc PUBLIC
-    ${PROTOBUF_LIBRARIES}
-)
 
 ########################################################
 # tf_core_lib library
@@ -140,6 +139,16 @@ if(UNIX)
   list(APPEND tf_core_lib_srcs ${tf_core_platform_posix_srcs})
 endif(UNIX)
 
+if(WIN32)
+  file(GLOB tf_core_platform_windows_srcs
+      "${tensorflow_source_dir}/tensorflow/core/platform/windows/*.h"
+      "${tensorflow_source_dir}/tensorflow/core/platform/windows/*.cc"
+      "${tensorflow_source_dir}/tensorflow/core/platform/posix/error.h"
+      "${tensorflow_source_dir}/tensorflow/core/platform/posix/error.cc"
+  )
+  list(APPEND tf_core_lib_srcs ${tf_core_platform_windows_srcs})
+endif(WIN32)
+
 if(tensorflow_ENABLE_SSL_SUPPORT)
   # Cloud libraries require boringssl.
   file(GLOB tf_core_platform_cloud_srcs
@@ -157,14 +166,6 @@ file(GLOB_RECURSE tf_core_lib_test_srcs
     "${tensorflow_source_dir}/tensorflow/core/public/*test*.h"
 )
 list(REMOVE_ITEM tf_core_lib_srcs ${tf_core_lib_test_srcs})
-
-if(NOT tensorflow_ENABLE_SSL_SUPPORT)
-  file(GLOB_RECURSE tf_core_lib_cloud_srcs
-      "${tensorflow_source_dir}/tensorflow/core/platform/cloud/*.h"
-      "${tensorflow_source_dir}/tensorflow/core/platform/cloud/*.cc"
-  )
-  list(REMOVE_ITEM tf_core_lib_srcs ${tf_core_lib_cloud_srcs})
-endif()
 
 add_library(tf_core_lib OBJECT ${tf_core_lib_srcs})
 add_dependencies(tf_core_lib ${tensorflow_EXTERNAL_DEPENDENCIES} tf_protos_cc)
