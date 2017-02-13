@@ -30,6 +30,7 @@ RUN pip3 --no-cache-dir install \
         numpy \
         scipy \
         sklearn \
+        pandas \
         Pillow \
         && \
     python3 -m ipykernel.kernelspec
